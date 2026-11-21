@@ -59,7 +59,7 @@ def table_defaults_tex():
         rf"\setlength{{\arrayrulewidth}}{{{ARRAYRULEWIDTH}}}" + "\n"
         rf"\setlength{{\extrarowheight}}{{{EXTRAROWHEIGHT}}}" + "\n"
         rf"\BeforeBeginEnvironment{{table}}{{\needspace{{{TABLE_NEEDSPACE}}}}}" + "\n"
-        rf"\BeforeBeginEnvironment{{longtable}}{{\needspace{{{TABLE_NEEDSPACE}}}}}"
+        #rf"\BeforeBeginEnvironment{{longtable}}{{\needspace{{{TABLE_NEEDSPACE}}}}}"
     )
 
 

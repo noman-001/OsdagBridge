@@ -15,40 +15,58 @@ from osdagbridge.core.utils.common import (
     KEY_MATERIAL_GIRDER_DENSITY,
     KEY_PL_SELF_WEIGHT_FACTOR,
     KEY_RL_LOAD_VALUE,
-    KEY_SL_DAMPING,
-    KEY_SL_DEAD_LOAD_MODE,
-    KEY_SL_DEAD_LOAD_VALUE,
     KEY_SL_HORIZONTAL_COEFF,
     KEY_SL_IMPORTANCE_FACTOR,
-    KEY_SL_LIVE_LOAD_MODE,
-    KEY_SL_LIVE_LOAD_VALUE,
-    KEY_SL_SEISMIC_ZONE,
     KEY_SL_SOIL_TYPE,
     KEY_SL_SPECTRAL_COEFF,
-    KEY_SL_TIME_PERIOD,
     KEY_SL_VERTICAL_COEFF,
     KEY_SL_ZONE_FACTOR,
     KEY_SPAN,
     KEY_TL_BRIDGE_TEMP_MAX,
     KEY_TL_BRIDGE_TEMP_MIN,
-    KEY_TL_HIGHEST_MAX_TEMP,
-    KEY_TL_LOWEST_MIN_TEMP,
     KEY_TL_TEMP_FALL,
     KEY_TL_TEMP_RISE,
     KEY_WC_LD_LANE_TABLE_COUNT,
     KEY_WC_MATERIAL,
     KEY_WC_THICKNESS,
     KEY_WL_AVG_EXPOSED_HEIGHT,
-    KEY_WL_BASIC_WIND_SPEED,
     KEY_WL_HOURLY_MEAN_WIND,
     KEY_WL_HOURLY_WIND_PRESSURE,
     KEY_WL_LONGITUDINAL_WIND_FORCE,
     KEY_WL_TERRAIN_TYPE,
     KEY_WL_TRANSVERSE_WIND_FORCE,
-    KEY_WL_VERTICAL_WIND_FORCE
+    KEY_WL_VERTICAL_WIND_FORCE,
 )
 
 from osdagbridge.core.reports.report_utils import _tex, _render_value
+
+
+def _infer_lanes(input_dict):
+    for k in (KEY_WC_LD_LANE_TABLE_COUNT, "lane_count", "no_of_lanes", "num_lanes", "lanes"):
+        v = input_dict.get(k)
+        if v not in (None, ""):
+            try:
+                n = int(float(v))
+                if n > 0:
+                    return n
+            except Exception:
+                pass
+    # Fallback: IRC 5 Cl. 104.3.1 from carriageway width
+    for k in ("carriageway_width", "Carriageway Width", "cw_width"):
+        v = input_dict.get(k)
+        if v not in (None, ""):
+            try:
+                w = float(str(v).split()[0])
+                if w < 5.3:
+                    return 1
+                if w < 9.6:
+                    return 2
+                if w < 13.1:
+                    return 3
+                return max(4, int(w // 3.5))
+            except Exception:
+                pass
+    return 2
 
 
 def ch3_loads(input_dict):
@@ -62,13 +80,17 @@ def ch3_loads(input_dict):
         except Exception:
             span_m = None
 
-    lanes = input_dict.get(KEY_WC_LD_LANE_TABLE_COUNT)
+    lanes = _infer_lanes(input_dict)
     braking_kN = None
-    if lanes not in (None, ""):
-        try:
-            braking_kN = IRC6_2017.cl_211_2_braking_force(int(lanes)) * 9.81
-        except Exception:
-            braking_kN = None
+    try:
+        bf = IRC6_2017.cl_211_2_braking_force(lanes)
+        if isinstance(bf, dict):
+            val = bf.get("total_braking_force_kN") or bf.get("braking_force_kN")
+            braking_kN = float(val) if val else None
+        elif bf:
+            braking_kN = float(bf) * 9.81
+    except Exception:
+        braking_kN = None
 
     im_a = None
     im_heavy = None
@@ -108,7 +130,9 @@ def ch3_loads(input_dict):
 
         if has_braking:
             brk_cons = "Yes"
-            brk_val = f"{braking_kN:.2f} kN" if braking_kN is not None else "---"
+            # IRC 6 Cl. 211.2: 20% of first train load if code helper unavailable
+            val_kn = braking_kN if braking_kN is not None else 0.20 * float(load_kn)
+            brk_val = f"{val_kn:.2f} kN"
             brk_ecc = "1.20 m"
         else:
             brk_cons = "No"
@@ -116,7 +140,7 @@ def ch3_loads(input_dict):
             brk_ecc = "---"
 
         veh_rows.append(
-            f"{_tex(label)} & {load_kn} & {im_str} & {brk_cons} & {brk_val} & {brk_ecc} \\\\[6pt]\n\\hline"
+            f"{_tex(label)} & {load_kn} & {im_str} & {brk_cons} & {brk_val} & {brk_ecc} \\\\[5pt]\n\\hline"
         )
 
     custom = input_dict.get(KEY_LL_CUSTOM_VEHICLES)
@@ -125,13 +149,17 @@ def ch3_loads(input_dict):
             cname = c.get("name") if isinstance(c, dict) else str(c)
             if cname:
                 cload = str(c.get("total_load", "---")) if isinstance(c, dict) else "---"
-                brk_val = f"{braking_kN:.2f} kN" if braking_kN is not None else "---"
+                try:
+                    val_kn = braking_kN if braking_kN is not None else 0.20 * float(cload)
+                    brk_val = f"{val_kn:.2f} kN"
+                except Exception:
+                    brk_val = "---"
                 veh_rows.append(
-                    f"{_tex(cname)} & {_tex(cload)} & --- & Yes & {brk_val} & 1.20 m \\\\[6pt]\n\\hline"
+                    f"{_tex(cname)} & {_tex(cload)} & --- & Yes & {brk_val} & 1.20 m \\\\[5pt]\n\\hline"
                 )
 
     if not veh_rows:
-        veh_rows.append(r"\multicolumn{6}{|c|}{No live load vehicles selected} \\[6pt]" + "\n\\hline")
+        veh_rows.append(r"\multicolumn{6}{|c|}{No live load vehicles selected} \\[5pt]" + "\n\\hline")
 
     veh_rows_str = "\n".join(veh_rows)
 
@@ -193,10 +221,12 @@ def ch3_loads(input_dict):
 
 This section summarizes all loads applied to the bridge and the load combinations considered for analysis and design.
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Dead Load -- Self Weight}}
+\begin{tabular}{|L{5.5cm}|p{10.0cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Steel Self-Weight Applied} & """ + (_render_value(input_dict, KEY_MATERIAL_GIRDER_DENSITY, ' kN/m\\textsuperscript{3}')) + r""" \\[6pt]
@@ -205,12 +235,15 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Self-Weight Factor} & """ + (_render_value(input_dict, KEY_PL_SELF_WEIGHT_FACTOR)) + r""" \\[6pt]
 \hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Dead Load for Surfacing (DW)}}
+\begin{tabular}{|L{5.5cm}|p{10.0cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Wearing Course Load} & """ + (_render_value(input_dict, KEY_WC_MATERIAL)) + r""" x """ + (_render_value(input_dict, KEY_WC_THICKNESS)) + r""" \\[6pt]
@@ -219,12 +252,13 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Railing Load} & """ + (_render_value(input_dict, KEY_RL_LOAD_VALUE)) + r""" kN/m\sdstar{} \\[6pt]
 \hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\needspace{10\baselineskip}
-\begin{longtable}{|L{3.4cm}|C{2.4cm}|C{2.2cm}|C{2.2cm}|C{2.6cm}|C{2.4cm}|}
-\caption{\textbf{Vehicle Live Loads (LL) --- per IRC 6}} \\
+\begin{table}[H]
+\centering
+\caption{\textbf{Vehicle Live Loads (LL) --- per IRC 6}}
+\begin{tabular}{|L{3.4cm}|C{2.4cm}|C{2.2cm}|C{2.2cm}|C{2.6cm}|C{2.4cm}|}
 \hline
 \rowcolor{tableHeaderBg}
  & & & \multicolumn{3}{c|}{\textbf{Braking Load}} \\
@@ -232,36 +266,29 @@ This section summarizes all loads applied to the bridge and the load combination
 \rowcolor{tableHeaderBg}
 \multirow{-2}{*}{\textbf{Vehicle}} & \multirow{-2}{*}{\textbf{Total Load (kN)}} & \multirow{-2}{*}{\textbf{Impact Factor}} & \textbf{Considered?} & \textbf{Value} & \textbf{Eccentricity} \\
 \hline
-\endfirsthead
-\caption[]{\textbf{Vehicle Live Loads (LL) --- per IRC 6 \textit{(Continued)}}} \\
-\hline
-\rowcolor{tableHeaderBg}
- & & & \multicolumn{3}{c|}{\textbf{Braking Load}} \\
-\cline{4-6}
-\rowcolor{tableHeaderBg}
-\multirow{-2}{*}{\textbf{Vehicle}} & \multirow{-2}{*}{\textbf{Total Load (kN)}} & \multirow{-2}{*}{\textbf{Impact Factor}} & \textbf{Considered?} & \textbf{Value} & \textbf{Eccentricity} \\
-\hline
-\endhead
-\multicolumn{6}{r}{\footnotesize\textit{Continued on next page\ldots}} \\
-\endfoot
-\endlastfoot
 """ + veh_rows_str + r"""
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|C{4.5cm}|L{5.5cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Footpath Live Load (if applicable)}}
+\begin{tabular}{|L{5.5cm}|C{4.5cm}|L{5.5cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value (kN/m\textsuperscript{2})} & \textbf{Reference / Mode} \\
 \hline
 \textnormal{Footpath Live Load Pressure} & """ + fp_val_str + r""" & """ + _tex(fp_ref) + r""" \\[6pt]
 \hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Wind Load (WL) --- per IRC 6}}
+\begin{tabular}{|L{5.5cm}|p{10.0cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Basic Wind Speed, Vb} & """ + (_render_value(input_dict, 'wind_speed', ' m/s')) + r""" [from Project Location] \\[6pt]
@@ -280,12 +307,15 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Vertical Wind Force} & """ + (_render_value(input_dict, KEY_WL_VERTICAL_WIND_FORCE, ' kN')) + r""" \\[6pt]
 \hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Earthquake Load (EL) --- per IRC 6}}
+\begin{tabular}{|L{5.5cm}|p{10.0cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Seismic Zone} & """ + (_render_value(input_dict, 'seismic_zone')) + r""" [from Project Location] \\[6pt]
@@ -302,16 +332,15 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Vertical Seismic Coefficient, Av} & """ + (_render_value(input_dict, KEY_SL_VERTICAL_COEFF)) + r""" \\[6pt]
 \hline
-\textnormal{Horizontal Seismic Force (longitudinal)} &  kN \\[6pt]
-\hline
-\textnormal{Horizontal Seismic Force (transverse)} &  kN \\[6pt]
-\hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
-\vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
+\begin{table}[H]
+\centering
 \caption{\textbf{Temperature Load (TL) --- per IRC 6}}
+\begin{tabular}{|L{5.5cm}|p{10.0cm}|}
 \hline
+\rowcolor{tableHeaderBg}
 \textbf{Parameter} & \textbf{Value} \\
 \hline
 \textnormal{Maximum Shade Temperature} & """ + (_render_value(input_dict, 'shade_temp_max')) + r""" $^\circ$C \\[6pt]
@@ -320,9 +349,10 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Effective Bridge Temp. Range} & """ + (_render_value(input_dict, KEY_TL_BRIDGE_TEMP_MIN)) + r""" to """ + (_render_value(input_dict, KEY_TL_BRIDGE_TEMP_MAX)) + r""" $^\circ$C \\[6pt]
 \hline
-\textnormal{Temperature Rise / Fall for Design} & +""" + (_render_value(input_dict, KEY_TL_TEMP_RISE)) + r""" $^\circ$C / \textminus{}""" + (_render_value(input_dict, KEY_TL_TEMP_FALL)) + r""" $^\circ$C \\[6pt]
+\textnormal{Temperature Rise / Fall for Design} & +""" + (_render_value(input_dict, KEY_TL_TEMP_RISE)) + r""" $^\circ$C / $-$""" + (_render_value(input_dict, KEY_TL_TEMP_FALL)) + r""" $^\circ$C \\[6pt]
 \hline
-\end{longtable}
+\end{tabular}
+\end{table}
 
 \vspace{1em}
 \begin{longtable}{|C{4.0cm}|p{11.5cm}|}

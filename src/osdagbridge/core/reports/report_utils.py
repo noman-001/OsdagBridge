@@ -13,16 +13,15 @@ def _tex(value):
     s = str(value) if value is not None else ''
     if not s:
         return r''
-    # Normalise non-ASCII glyphs from section designations (e.g. "∠ 100 ⅹ 100ⅹ 10")
-    # that pdflatex cannot render.
     for uni, ascii_ in [('∠', 'L'), ('ⅹ', 'x'), ('×', 'x')]:
         s = s.replace(uni, ascii_)
-    s = s.replace('\\', r'\textbackslash{}')
+    s = s.replace('\\', '@@OSDAG_BSLASH@@')
     for ch, esc in [('&', r'\&'), ('%', r'\%'), ('$', r'\$'), ('#', r'\#'),
                     ('{', r'\{'), ('}', r'\}'),
                     ('_', r'\_\allowbreak{}'),
                     ('~', r'\textasciitilde{}'), ('^', r'\^{}')]:
         s = s.replace(ch, esc)
+    s = s.replace('@@OSDAG_BSLASH@@', r'\textbackslash{}')
     s = s.replace(':', r':\allowbreak{}')
     return s
 
@@ -51,7 +50,6 @@ def get_girder_entries(input_dict):
 
 
 def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
-    """Embed figure if path is provided (file already copied to assets), else show placeholder box."""
     if path:
         p = path.replace('\\', '/')
         return (r'\begin{figure}[H]' + '\n'
@@ -69,7 +67,6 @@ def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
 
 
 def _fig_embed(path, caption, width=r'\textwidth', height=None):
-    """Embed a real figure when path is provided; otherwise use an fbox placeholder."""
     if path:
         p = path.replace('\\', '/')
         opts = 'width=' + width
@@ -89,7 +86,7 @@ def _fig_embed(path, caption, width=r'\textwidth', height=None):
 
 
 def ensure_longtable_headers(tex_str):
-    """Add repeating headers (endfirsthead/endhead) to longtable blocks that lack them."""
+    """Add repeating headers to longtable blocks that span multiple rows."""
     pattern = re.compile(
         r"(\\begin\{longtable\}\{[^\n]+\})(.*?)(\\end\{longtable\})",
         re.DOTALL,
@@ -117,17 +114,34 @@ def ensure_longtable_headers(tex_str):
         if r"\multirow" in header_row or r"\textnormal" in header_row:
             return match.group(0)
 
+        data_rows = len(re.findall(r"\\\\", rest))
+        if data_rows < 8:
+            return match.group(0)
+
+        # In re.sub replacement strings, \\\\ produces two literal backslashes
+        header_row_nobreak = re.sub(
+            r"\\\\(\[[^\]]*\])?(\s*\n)$",
+            r"\\\\*\1\2",
+            header_row,
+        )
+        rest_nobreak_first = re.sub(
+            r"\\\\(\[[^\]]*\])?(\s*\n\\hline)",
+            r"\\\\*\1\2",
+            rest,
+            count=1,
+        )
+
         num_cols = header_row.count("&") + 1
 
         cap_first = cap_part.strip()
         cap_cont = ""
         if cap_first:
             if not cap_first.endswith(r"\\"):
-                cap_first = cap_first + r" \\"
+                cap_first = cap_first + r" \\*"
             cap_first = "\n" + cap_first + "\n"
             cap_cont = re.sub(
-                r"\\caption\{(.*)\}\s*\\\\",
-                r"\\caption[]{\1 \\textit{(Continued)}} \\\\",
+                r"\\caption\{(.*)\}\s*\\\\\*?",
+                r"\\caption[]{\1 \\textit{(Continued)}} \\\\*",
                 cap_first,
             )
 
@@ -135,19 +149,19 @@ def ensure_longtable_headers(tex_str):
             f"{cap_first}"
             f"{hline1}"
             f"\\rowcolor{{tableHeaderBg}}\n"
-            f"{header_row}"
+            f"{header_row_nobreak}"
             f"{hline2}"
             f"\\endfirsthead\n"
             f"{cap_cont}"
             f"{hline1}"
             f"\\rowcolor{{tableHeaderBg}}\n"
-            f"{header_row}"
+            f"{header_row_nobreak}"
             f"{hline2}"
             f"\\endhead\n"
             f"\\multicolumn{{{num_cols}}}{{r}}{{\\footnotesize\\textit{{Continued on next page\\ldots}}}} \\\\\n"
             f"\\endfoot\n"
             f"\\endlastfoot\n"
         )
-        return start_tag + patched_head + rest + end_tag
+        return start_tag + patched_head + rest_nobreak_first + end_tag
 
     return pattern.sub(_patch, tex_str)

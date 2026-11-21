@@ -4,6 +4,23 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from osdagbridge.core.utils.common import (
+    KEY_DD_HAS_OVERHANG,
+    KEY_DD_MU_BOT,
+    KEY_DD_MU_OH,
+    KEY_DD_MU_TOP,
+    KEY_DD_M_ULS_HOG,
+    KEY_DD_M_ULS_OH,
+    KEY_DD_M_ULS_SAG,
+    KEY_DD_PUNCH_VED,
+    KEY_DD_SHEAR_VED,
+    KEY_DD_SHEAR_VRDC,
+    KEY_DD_VRD_C_MPA,
+    KEY_DD_WK_BOT,
+    KEY_DD_WK_LIMIT,
+    KEY_DD_WK_OH,
+    KEY_DD_WK_TOP,
+)
 from osdagbridge.core.reports.styles import (
     CHART_DPI,
     CHART_GREEN,
@@ -15,17 +32,16 @@ from osdagbridge.core.reports.styles import (
 
 
 def _to_float(val):
-    if val is None:
+    if val is None or val == "":
         return None
     if isinstance(val, (int, float)):
         return float(val)
-    # Strip units or LaTeX formatting if present (e.g. "42.50 MT")
     m = re.search(r"[-+]?\d*\.?\d+", str(val))
     return float(m.group(0)) if m else None
 
 
 def extract_primary_urs(bridge):
-    """Collect governing (max) UR for each primary bridge component."""
+    """Return governing UR for each primary bridge component."""
     out = bridge.output_dict or {}
     dr = out.get("design_results", {}) or {}
     per_girder = dr.get("per_girder", {}) or {}
@@ -42,30 +58,41 @@ def extract_primary_urs(bridge):
                 girder_urs.append(d)
     girder_ur = max(girder_urs) if girder_urs else 0.0
 
-    # 2. Concrete Deck Slab
+    # 2. Concrete Deck Slab (includes bottom, top, and overhang crack width checks)
     deck_urs = []
+    pair_ratios = []
+    wks = []
+    wk_limit = None
     if deck_rpt:
-        pairs = [
-            ("deck_design.m_uls_sag", "deck_design.mu_bot"),
-            ("deck_design.m_uls_hog", "deck_design.mu_top"),
-            ("deck_design.m_uls_oh", "deck_design.mu_oh"),
-            ("deck_design.punch_ved", "deck_design.vrd_c_mpa"),
-            ("deck_design.shear_ved", "deck_design.shear_vrdc"),
+        has_oh = bool(deck_rpt.get(KEY_DD_HAS_OVERHANG))
+        ratio_pairs = [
+            (KEY_DD_M_ULS_SAG, KEY_DD_MU_BOT),
+            (KEY_DD_M_ULS_HOG, KEY_DD_MU_TOP),
+            (KEY_DD_PUNCH_VED, KEY_DD_VRD_C_MPA),
+            (KEY_DD_SHEAR_VED, KEY_DD_SHEAR_VRDC),
         ]
-        for dk, ck in pairs:
+        if has_oh:
+            ratio_pairs.append((KEY_DD_M_ULS_OH, KEY_DD_MU_OH))
+
+        for dk, ck in ratio_pairs:
             dem = _to_float(deck_rpt.get(dk))
             cap = _to_float(deck_rpt.get(ck))
-            if dem is not None and cap and cap > 0:
-                deck_urs.append(dem / cap)
+            ratio = (dem / cap) if (dem is not None and cap and cap > 0) else None
+            pair_ratios.append((dk, ck, dem, cap, ratio))
+            if ratio is not None:
+                deck_urs.append(ratio)
 
-        # Fallback: scan any *_ur keys in deck_design_results
-        if not deck_urs:
-            dd = out.get("deck_design_results", {}) or {}
-            for k, v in dd.items():
-                if "ur" in str(k).lower() or "ratio" in str(k).lower():
-                    fv = _to_float(v)
-                    if fv is not None:
-                        deck_urs.append(fv)
+        wk_limit = _to_float(deck_rpt.get(KEY_DD_WK_LIMIT))
+        wks = [
+            _to_float(deck_rpt.get(KEY_DD_WK_BOT)) or 0.0,
+            _to_float(deck_rpt.get(KEY_DD_WK_TOP)) or 0.0,
+        ]
+        if has_oh:
+            wks.append(_to_float(deck_rpt.get(KEY_DD_WK_OH)) or 0.0)
+        gov_wk = max(wks) if wks else None
+        if gov_wk is not None and wk_limit and wk_limit > 0:
+            deck_urs.append(gov_wk / wk_limit)
+
     deck_ur = max(deck_urs) if deck_urs else 0.0
 
     # 3. Cross Bracing
@@ -78,7 +105,7 @@ def extract_primary_urs(bridge):
                     cb_urs.append(fv)
     cb_ur = max(cb_urs) if cb_urs else 0.0
 
-    # 4. End Diaphragms (uses cross-bracing UR when configured as bracing)
+    # 4. End Diaphragms (mirrors cross bracing UR when bracing-type diaphragm is used)
     ed_type = ""
     for k, v in (bridge.input_dict or {}).items():
         if "end_diaphragm" in str(k).lower() and "type" in str(k).lower() and v:
@@ -138,25 +165,23 @@ def generate_ur_chart(bridge, out_path):
 
 
 def generate_material_charts(input_dict, out_dir):
-    """Generate Chapter 7 material quantity charts (steel tonnage + concrete vs rebar)."""
+    """Generate Chapter 7 material quantity charts."""
     os.makedirs(out_dir, exist_ok=True)
     paths = {}
 
-    # --- Chart 1: Structural Steel Tonnage ---
     girders_mt = _to_float(input_dict.get("steel_girders_wt_total")) or 0.0
     cb_top = _to_float(input_dict.get("bracing_top_wt_total")) or 0.0
     cb_bot = _to_float(input_dict.get("bracing_bot_wt_total")) or 0.0
     cb_diag = _to_float(input_dict.get("bracing_diag_wt_total")) or 0.0
     cb_total_mt = cb_top + cb_bot + cb_diag
-    ed_mt = _to_float(input_dict.get("end_diaphragm_wt_total")) or 0.0
     studs_mt = _to_float(input_dict.get("shear_studs_wt_total")) or 0.0
 
-    steel_labels = ["Plate Girders", "Cross Bracing", "End Diaphragms", "Shear Studs"]
-    steel_vals = [girders_mt, cb_total_mt, ed_mt, studs_mt]
-    steel_colors = [CHART_BLUE, CHART_GREEN, CHART_AMBER, "#6B7280"]
+    steel_labels = ["Plate Girders", "Cross Bracing", "Shear Studs"]
+    steel_vals = [girders_mt, cb_total_mt, studs_mt]
+    steel_colors = [CHART_BLUE, CHART_GREEN, CHART_AMBER]
 
     fig, ax = plt.subplots(figsize=(7.2, 3.8))
-    bars = ax.bar(steel_labels, steel_vals, color=steel_colors, width=0.5, edgecolor="#333333", linewidth=0.6)
+    bars = ax.bar(steel_labels, steel_vals, color=steel_colors, width=0.45, edgecolor="#333333", linewidth=0.6)
     ymax = max(max(steel_vals), 1.0) * 1.2
     ax.set_ylim(0, ymax)
     ax.set_ylabel("Weight (Metric Tonnes, MT)", fontsize=9.5)
@@ -184,7 +209,6 @@ def generate_material_charts(input_dict, out_dir):
     plt.close(fig)
     paths["chart_steel_tonnage"] = steel_path.replace("\\", "/")
 
-    # --- Chart 2: Concrete Volume (m3) vs Reinforcement Steel (MT) ---
     conc_vol = _to_float(input_dict.get("concrete_deck_vol_total")) or 0.0
     rebar_mt = _to_float(input_dict.get("rebar_deck_wt_total")) or 0.0
 
