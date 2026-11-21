@@ -1,13 +1,28 @@
-def ch7_quantities(input_dict):
+from osdagbridge.core.reports.report_utils import _fig_embed
+from osdagbridge.core.reports.styles import COMPACT_TABCOLSEP
+
+
+def ch7_quantities(input_dict, fig_paths=None):
+    fig_paths = fig_paths or {}
+    steel_chart = _fig_embed(
+        fig_paths.get("chart_steel_tonnage"),
+        "Structural Steel Quantity Breakdown (MT)",
+        width=r"0.88\textwidth",
+    )
+    conc_chart = _fig_embed(
+        fig_paths.get("chart_concrete_rebar"),
+        r"Concrete Volume ($\mathrm{m^3}$) vs. Reinforcement Steel Weight (MT)",
+        width=r"0.88\textwidth",
+    )
+
     return r"""
 \chapter{Material Take-off \& Quantity Summary}
 \label{ch:material-takeoff}
 
-\noindent\textbf{Table 7.1  Bill of Materials (Steel, Concrete, and Reinforcement Quantities)}
-
 \begingroup
-\setlength{\tabcolsep}{3.5pt}
+\setlength{\tabcolsep}{""" + COMPACT_TABCOLSEP + r"""}
 \begin{longtable}{|C{1.0cm}|L{3.8cm}|C{2.6cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|}
+\caption{\textbf{Bill of Materials (Steel, Concrete, and Reinforcement Quantities)}}
 \hline
 \textbf{S.N.} & \textbf{Item Description} & \textbf{Volume} & \textbf{Quantity} & \textbf{Total Volume} & \textbf{Weight (MT)} & \textbf{Total Weight (MT)} \\
 \hline
@@ -28,6 +43,13 @@ def ch7_quantities(input_dict):
 6 & Crash Barrier & """ + str(input_dict.get("crash_barrier_vol_formula", "N.A.")) + r""" & """ + str(input_dict.get("crash_barrier_qty", "N.A.")) + r""" & """ + str(input_dict.get("crash_barrier_vol_total", "N.A.")) + r""" & """ + str(input_dict.get("crash_barrier_wt_single", "N.A.")) + r""" & """ + str(input_dict.get("crash_barrier_wt_total", "N.A.")) + r""" \\
 \hline
 \end{longtable}
+\endgroup
+
+\section{Material Quantity Visualizations}
+
+""" + steel_chart + r"""
+
+\vspace{0.8em}
+
+""" + conc_chart + r"""
 """
-
-

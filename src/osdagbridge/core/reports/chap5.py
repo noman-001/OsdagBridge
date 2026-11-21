@@ -1,7 +1,3 @@
-# =============================================================================
-# Chapter 5: Design Checks
-# Extracted from report_generator.py — DO NOT add business logic here.
-# =============================================================================
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
@@ -141,29 +137,22 @@ from osdagbridge.core.utils.common import (
     KEY_UTIL_SHEAR
 )
 
-from osdagbridge.core.reports.report_utils import _tex, _render_value, get_girder_entries
+from osdagbridge.core.reports.report_utils import _tex, _render_value, get_girder_entries, _fig_embed
 
 if TYPE_CHECKING:
     pass
-def ch5_design_checks(checks_data, bridge) -> str:
-    """Chapter 5 — Design Checks.
 
-    Parameters
-    ----------
-    checks_data : dict
-        Raw checks payload (currently unused; data is sourced from bridge).
-    bridge : ReportDataBridge
-        Provides input_dict, output_dict, and helper methods.
-    """
+
+def ch5_design_checks(checks_data, bridge, fig_paths=None) -> str:
+    """Chapter 5 — Design Checks."""
+    fig_paths = fig_paths or {}
+
     girder_entries = get_girder_entries(bridge.input_dict)
     if not girder_entries:
         n = int(bridge.input_dict.get(KEY_TS_NO_OF_GIRDERS, 1))
         girder_entries = [(f"Girder {i}", f"M1") for i in range(1, n + 1)]
     n_girders = len(girder_entries)
 
-    # Deck slab design report values (Tables 5.17(a)-(g)), keyed to
-    # common.KEY_DD_*. Populated by deckdesign.design_deck_slab(); empty
-    # dict when deck design has not been run. Look up with deck_rpt.get(KEY_...).
     deck_rpt = bridge.output_dict.get("deck_report_values", {}) or {}
 
     # Generate Table 5.1 rows (per-girder section properties)
@@ -213,8 +202,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
     t52_content = "\n".join(t52_rows)
 
     # Generate Table 5.3 rows
-    # Flexure UR is stored as a percent (cat_urs × 100); show as a ratio (÷100,
-    # 2 dp) and PASS when ≤ 1.0.
     try:
         _flex_ur = float(bridge.output_dict.get(KEY_UTIL_FLEXURE)) / 100.0
         _flex_ur_str = f"{_flex_ur:.2f}"
@@ -235,8 +222,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
     t53_content = "\n".join(t53_rows)
 
     # Generate Table 5.4 rows
-    # Shear UR is stored as a percent (cat_urs × 100); show as a ratio (÷100,
-    # 2 dp) and PASS when ≤ 1.0.
     try:
         _shear_ur = float(bridge.output_dict.get(KEY_UTIL_SHEAR)) / 100.0
         _shear_ur_str = f"{_shear_ur:.2f}"
@@ -267,14 +252,13 @@ def ch5_design_checks(checks_data, bridge) -> str:
     t54_content = "\n".join(t54_rows)
 
     # Generate Table 5.5 rows
-    # Interaction DCRs use the engine bands: PASS <0.90, WARN <1.00, FAIL ≥1.00.
     def _interaction_status(ratio):
         if ratio < 0.90:
             return "PASS"
         elif ratio < 1.00:
             return "WARN"
         return r"\textcolor{red}{FAIL}"
-    # M-V interaction UR stored as percent → show ratio (2 dp).
+
     try:
         _mv_ur = float(bridge.output_dict.get(KEY_UTIL_INTERACTION)) / 100.0
         _mv_ur_str = f"{_mv_ur:.2f}"
@@ -282,7 +266,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
     except (TypeError, ValueError):
         _mv_ur_str = ""
         _mv_status = "---"
-    # M-N interaction: None → no axial load → N/A.
+
     _mn_r  = bridge.output_dict.get(KEY_SD_MN_RATIO)
     _mn_ax = bridge.output_dict.get(KEY_SD_MN_AXIAL)
     _mn_mo = bridge.output_dict.get(KEY_SD_MN_MOMENT)
@@ -307,7 +291,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
     t55_content = "\n".join(t55_rows)
 
     # Generate Table 5.6 rows
-    # LTB UR stored as percent → show ratio (2 dp); engine bands via _interaction_status.
     try:
         _ltb_ur = float(bridge.output_dict.get(KEY_UTIL_LTB)) / 100.0
         _ltb_ur_str = f"{_ltb_ur:.2f}"
@@ -350,13 +333,13 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t57_content = "\n".join(t57_rows)
 
-    # Generate table - intermediate stiffener checks (IS 800 CL. 8.7.1.2)
-    # Status: PASS when Provided ≥ Required.
+    # Intermediate stiffener checks (IS 800 CL. 8.7.1.2)
     def _ge_status(provided, required):
         try:
             return "PASS" if float(provided) >= float(required) else r"\textcolor{red}{FAIL}"
         except (TypeError, ValueError):
             return "---"
+
     _iys_status = _ge_status(bridge.output_dict.get(KEY_SD_IS_IYS_PROV),
                              bridge.output_dict.get(KEY_SD_IS_IYS_MIN))
     _fqd_status = _ge_status(bridge.output_dict.get(KEY_SD_IS_FQD),
@@ -371,10 +354,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t58_content = "\n".join(t58_rows)
 
-    # (Intermediate Stiffener Checks) is a verification table — it only
-    # has data when the user supplied stiffener sizes (Design Type = Custom). In
-    # Optimized mode the stiffeners are auto-sized (nothing to verify), so the
-    # whole table is omitted from the report.
     _is_custom = str(bridge.input_dict.get(KEY_DESIGN_MODE, "Optimized")).strip().lower() in {"custom", "customized"}
     if _is_custom:
         t58_block = r"""
@@ -392,20 +371,18 @@ def ch5_design_checks(checks_data, bridge) -> str:
     else:
         t58_block = ""
 
-    # Generate Table 5.9 rows — bearing stiffener checks (IS 800 Cl.8.7.3).
-    # End panel == bearing stiffener for this bridge. Each resistance vs reaction R.
-    # Resistances are 0 in guidance-only mode (optimized w/o outstand) → N/A until
-    # the designer defaults outstand to (bf−tw)/2.
+    # Bearing stiffener checks (IS 800 Cl.8.7.3)
     _bs_r = bridge.output_dict.get(KEY_SD_BS_R)
+
     def _bs_check(resist_key):
         prov = bridge.output_dict.get(resist_key)
-        # Resistance not computed (guidance mode) → N/A.
         if prov is None or float(prov) <= 0.0 or _bs_r is None:
             return ("N/A", "N/A", "N/A")
         req_s  = f"{_bs_r} kN"
         prov_s = f"{prov} kN"
         status = "PASS" if float(prov) >= float(_bs_r) else r"\textcolor{red}{FAIL}"
         return (req_s, prov_s, status)
+
     _wb_req, _wb_prov, _wb_st = _bs_check(KEY_SD_BS_FCDW_WB)
     _lc_req, _lc_prov, _lc_st = _bs_check(KEY_SD_BS_FCDW_LC)
     _ps_req, _ps_prov, _ps_st = _bs_check(KEY_SD_BS_FPSD)
@@ -424,31 +401,19 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t59_content = "\n".join(t59_rows)
 
-    # ── Table 5.10: Serviceability — Deflection Checks (IRC 22 Cl. 604.3.2) ──────
-    # Allowable limits: span-dependent, same for all girders, from output_dict.
-    # Actual deflections: per-girder from bridge._deflections_cache — the same
-    # source used by resolve_deflection_live_load/total in generate_results_values_builder.py.
-    # Keys: {"G1": {"live_mm": X, "total_mm": Y}, ...}
-    # lbl from girder_entries is "G1", "G2", ... which matches cache keys exactly.
-
+    # Table 5.10: Serviceability — Deflection Checks (IRC 22 Cl. 604.3.2)
     def _defl_status(actual, allowable):
-        """PASS / red FAIL for deflection; '---' when values are missing."""
         try:
             return "PASS" if float(actual) <= float(allowable) else r"\textcolor{red}{FAIL}"
         except (TypeError, ValueError):
             return "---"
 
     def _dfmt(v, nd=2):
-        """Format a numeric value to nd decimal places; empty string when None."""
         try:
             return f"{float(v):.{nd}f}"
-            
         except (TypeError, ValueError):
             return ""
 
-    # Mirror generate_results_values_builder.resolve_deflection_live/total_load
-    # exactly so the report shows the same numbers as the Generate Results dialog:
-    # allowable from span (L/800, L/600), actual from _deflections_cache.
     try:
         _span_m = float(bridge.input_dict.get(KEY_SPAN))
         _allow_live_mm  = _span_m * 1000.0 / 800.0
@@ -458,10 +423,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
     _allow_live_str  = (f"L/800 = {_allow_live_mm:.1f} mm")  if _allow_live_mm  is not None else ""
     _allow_total_str = (f"L/600 = {_allow_total_mm:.1f} mm") if _allow_total_mm is not None else ""
 
-    # The report has no live _deflections_cache (it builds a ReportDataBridge from
-    # output_dict only). design() persists the same per-girder cache values that
-    # the Generate Results dialog shows into output_dict under the canonical
-    # "G1".."Gn" suffix, so read them from there by loop index.
     t510_rows = []
     for _gi, (lbl, _) in enumerate(girder_entries, start=1):
         _live_mm  = bridge.output_dict.get(f"{KEY_SD_DEFL_LIVE}.G{_gi}")
@@ -481,11 +442,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t510_content = "\n".join(t510_rows)
 
-    # Generate Table 5.11 rows — SLS steel stress limitation (IRC 22 Cl. 604.3.1).
-    # Concrete & rebar deck stresses are deck-global and belong with the deck
-    # checks, so this table shows only the per-girder steel check. Steel stress is
-    # a single envelope-SLS value (same for every girder); allowable = 0.9·fy.
-    # Both live in the nested output_dict["design_results"] dict, not as flat keys.
+    # Table 5.11 — SLS steel stress limitation (IRC 22 Cl. 604.3.1)
     def _mpa(v):
         s = _dfmt(v, nd=2)
         return (s + " MPa") if s else ""
@@ -514,11 +471,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t511_content = "\n".join(t511_rows)
 
-    # Generate Table 5.12 rows — per-girder fatigue assessment (IRC 22 Cl. 605),
-    # mirroring the Generate Results dialog: one row per girder showing the
-    # GOVERNING fatigue check (worst of normal/shear by DCR). Source is the nested
-    # design_results["steeldesign.uls_per_girder"]["fatigue"][G{i}] dict, keyed by
-    # the canonical girder index, with {demand, capacity, ur, status}.
+    # Table 5.12 — per-girder fatigue assessment (IRC 22 Cl. 605)
     _fat_cat = ((bridge.output_dict.get("design_results", {}) or {})
                 .get(KEY_SD_ULS_PER_GIRDER, {}) or {}).get("fatigue", {}) or {}
 
@@ -540,10 +493,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     t512_content = "\n".join(t512_rows)
 
-    # Generate Table 5.13 rows — per-girder design summary, mirroring the Generate
-    # Results dialog's resolve_design_results_summary: one row per girder showing
-    # the CONTROLLING check (highest DCR among all checks) plus the real load
-    # case/combination that drives it. Source: design_results["per_girder"][G{i}].
+    # Table 5.13 — per-girder design summary
     _pg_summary = (bridge.output_dict.get("design_results", {}) or {}).get("per_girder", {}) or {}
 
     def _with_unit(value, unit):
@@ -563,7 +513,6 @@ def ch5_design_checks(checks_data, bridge) -> str:
 
         ctrl = max(checks, key=lambda c: c.get("dcr") or 0.0)
 
-        # Worst real load case for the controlling check id (skip Envelope pseudo-LCs)
         ctrl_lc, best_dcr = None, None
         for lc_name, lc_data in (g_data.get("per_lc") or {}).items():
             if str(lc_name).lower().startswith("envelope"):
@@ -586,9 +535,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
         )
     g_summary_table_content = "\n".join(g_summary_rows)
 
-    # ── Table 5.14: Shear Connector Capacity (bridge-level) ──────────────────
-    # Qu (Cl.606.3.1, Eq.6.1) and Qr (Cl.606.3.2, Table 8) are single per-stud
-    # values for the bridge, stored flat inside output_dict["design_results"].
+    # Table 5.14: Shear Connector Capacity
     _dr_sc = bridge.output_dict.get("design_results", {}) or {}
 
     def _kn(v):
@@ -604,10 +551,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
 \hline"""
     )
 
-    # ── Table 5.15: Shear Connector Spacing (bridge-level) ───────────────────
-    # Required spacings SL1/SL2/SR and the max-spacing limit are single bridge
-    # values in design_results. Each criterion passes when the provided spacing
-    # is no larger than that criterion's required spacing (denser = safe).
+    # Table 5.15: Shear Connector Spacing
     def _mm(v):
         s = _dfmt(v, nd=1)
         return (s + " mm") if s else ""
@@ -626,10 +570,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         + _sp_row("Max Spacing Limit (IRC 22)", _dr_sc.get("stud_spacing_max_mm")) + "\n\\hline"
     )
 
-    # ── Table 5.16: Transverse Shear & Detailing Checks (bridge-level) ───────
-    # Transverse shear (Cl.606.10): VL vs slab capacity VRd. Detailing (Cl.606.6):
-    # min transverse reinforcement, stud diameter ≤ 2·tf, edge distance ≥ 25 mm.
-    # All single bridge values in design_results; stud diameter from input_dict.
+    # Table 5.16: Transverse Shear & Detailing Checks
     def _cm2m(v):
         s = _dfmt(v, nd=2)
         return (s + r" cm$^2$/m") if s else ""
@@ -656,11 +597,6 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
     _ts_status = (r"\textcolor{red}{FAIL}" if _ts_ok is False else "PASS") if _ts_ok is not None else "---"
 
     _ast_req  = _dr_sc.get("Ast_required_cm2_per_m")
-    # Provided transverse steel = the deck's main (bottom + top) bars, which run
-    # transversely between girders and cross the shear plane. The deck design
-    # computes these (>= minimum) and they are what is actually provided. The
-    # steel designer's own Ast_provided is 0 because its transverse-shear check
-    # runs before design_deck_slab(), so read the deck-design value here instead.
     _dd_516 = bridge.output_dict.get("deck_design_results", {}) or {}
     try:
         _ast_prov = (float(_dd_516.get("rebar_bottom_area") or 0)
@@ -690,12 +626,11 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
                   _defl_status(_edge_req, _edge)) + "\n\\hline"
     )
 
-    # Generate Table 5.20(a) rows
+    # Table 5.20(a) rows
     cb_forces_rows = []
     pairs = bridge.get_cb_pairs()
 
     if not pairs:
-        # fallback: one placeholder row
         cb_forces_rows.append(
             r"""Between Girders & Diagonal &  &  &  &  \\[6pt]
 \hline"""
@@ -709,7 +644,6 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
                 conn_type = bridge.get_cb_connection(pair, member, ftype)
                 section  = bridge.get_cb_section(pair, member, ftype)
 
-                # Fetch properties from output_dict
                 if member == "diagonal":
                     pfx = f"transverse_member_design.cb.section_properties.bracing.{pair_id}"
                 else:
@@ -720,9 +654,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
                 area_cm2 = bridge.output_dict.get(f"{pfx}.A")
                 rv_cm = bridge.output_dict.get(f"{pfx}.rv")
 
-                # Convert Area: cm² -> mm²
                 area_str = f"{float(area_cm2) * 100:.1f}" if area_cm2 is not None else ""
-                # Convert rv: cm -> mm
                 rmin_str = f"{float(rv_cm) * 10:.1f}" if rv_cm is not None else ""
                 cb_forces_rows.append(
                     r"\multirow{2}{*}{\makecell{" + _tex(pair) + r"}} & "
@@ -733,13 +665,14 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
             cb_forces_rows.append(r"\hline")
     cb_forces_content = "\n".join(cb_forces_rows)
 
-    # Generate Table 5.20(b) rows
+    # Table 5.20(b) rows
     def get_status_str(slnd_str, limit):
         try:
             v = float(slnd_str)
             return r"\textcolor{black}{PASS}" if v <= limit else r"\textcolor{red}{FAIL}"
         except (ValueError, TypeError):
             return ""
+
     cb_slenderness_rows = []
     if not pairs:
         cb_slenderness_rows.append(
@@ -751,32 +684,32 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
             kl_diag = bridge.get_cb_effective_length("diagonal")
             slnd_diag = bridge.get_cb_slenderness(pair, "diagonal")
             status_diag = get_status_str(slnd_diag, 250)
-            
+
             kl_tc = bridge.get_cb_effective_length("chord")
             slnd_tc = bridge.get_cb_slenderness(pair, "chord")
             status_tc = get_status_str(slnd_tc, 250)
-            
+
             kl_bc = bridge.get_cb_effective_length("chord")
             slnd_bc = bridge.get_cb_slenderness(pair, "chord")
             status_bc = get_status_str(slnd_bc, 400)
-            
+
             top_chord_enabled = bridge.output_dict.get("member_properties.cross_bracing_details.top_chord", True)
             bottom_chord_enabled = bridge.output_dict.get("member_properties.cross_bracing_details.bottom_chord", True)
-            
+
             num_rows = 1 + int(top_chord_enabled) + int(bottom_chord_enabled)
             row_tex = r"\multirow{" + str(num_rows) + r"}{*}{\makecell{" + _tex(pair) + r"}}"
             row_tex += f" & Diagonal & C & {kl_diag} & {slnd_diag} & 250 --- {status_diag} \\\\[6pt]"
-            
+
             if top_chord_enabled:
                 row_tex += f"\n\\cline{{2-6}}\n & Top chord & C & {kl_tc} & {slnd_tc} & 250 --- {status_tc} \\\\[6pt]"
             if bottom_chord_enabled:
                 row_tex += f"\n\\cline{{2-6}}\n & Bottom chord & T & {kl_bc} & {slnd_bc} & 400 --- {status_bc} \\\\[6pt]"
-                
+
             row_tex += "\n\\hline"
             cb_slenderness_rows.append(row_tex)
     cb_slenderness_content = "\n".join(cb_slenderness_rows)
 
-    # Generate Table 5.20(c) rows
+    # Table 5.20(c) rows
     cb_capacity_rows = []
     for pair in pairs:
         rows_for_pair = []
@@ -800,18 +733,12 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         cb_capacity_rows.append(r"\hline")
     cb_capacity_content = "\n".join(cb_capacity_rows)
 
-
-
-    # ── Deck slab design value helpers (Tables 5.17 a/b/c/e/g) ────────────────
-    # Read from deck_rpt = output_dict["deck_report_values"] (common.KEY_DD_*).
-    # Tables 5.17(d) punching shear and 5.17(f) one-way shear stay as
-    # placeholders — those are not computed by design_deck_slab().
+    # Deck slab design value helpers
     _dk_has = bool(deck_rpt)
     _dk_oh = bool(deck_rpt.get(KEY_DD_HAS_OVERHANG))
     _DKPH = r"\placeholder{---}"
 
     def _dkv(key, default=0.0):
-        """Raw float for status comparisons (0.0 if missing/non-numeric)."""
         v = deck_rpt.get(key)
         if v is None or v == "":
             return default
@@ -821,7 +748,6 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
             return default
 
     def _dkf(key, nd=2, scale=1.0):
-        """Formatted display string; placeholder when deck design not run."""
         if not _dk_has:
             return _DKPH
         v = deck_rpt.get(key)
@@ -833,18 +759,15 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
             return str(v)
 
     def _dks(ok):
-        """PASS/FAIL status; '---' when deck design not run."""
         return ("PASS" if ok else "FAIL") if _dk_has else "---"
 
     def _dkoh(key, nd=2, scale=1.0, unit=""):
-        """Overhang value; 'N/A' when there is no overhang."""
         if not _dk_has:
             return _DKPH
         if not _dk_oh:
             return "N/A"
         return _dkf(key, nd=nd, scale=scale) + unit
 
-    # Governing crack width = max(bottom, top[, overhang]) vs the limit.
     _dk_wks = [_dkv(KEY_DD_WK_BOT), _dkv(KEY_DD_WK_TOP)]
     if _dk_oh:
         _dk_wks.append(_dkv(KEY_DD_WK_OH))
@@ -852,16 +775,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
     _dk_gov_wk_str = (f"{_dk_gov_wk:.4f}" if _dk_has else _DKPH)
     _dk_crack_ok = _dk_has and _dk_gov_wk <= _dkv(KEY_DD_WK_LIMIT)
 
-    # ── Table 5.22: Overall Design Check Summary — fill all rows ─────────────
-    # Three row families:
-    #  (1) Girder DCR-engine checks: one source (design_results["per_girder"])
-    #      gives Demand, Capacity, UR, and the governing LC together. Worst
-    #      girder = highest DCR. Most checks fire on the envelope demand (units
-    #      available in per_girder["checks"]); SLS-conditional checks (e.g.
-    #      deflection) only appear per-LC, so fall back to per_lc for those.
-    #  (2) Deck slab: URs from deck_design_results (Demand/Capacity not stored).
-    #  (3) Cross bracing: existing get_cb_* helpers (worst pair/member by UR).
-    #      End diaphragm has no report helpers yet → "---" for now.
+    # Table 5.22: Overall Design Check Summary
     _pg_522 = (bridge.output_dict.get("design_results", {}) or {}).get("per_girder", {}) or {}
     _dd_522 = bridge.output_dict.get("deck_design_results", {}) or {}
 
@@ -881,8 +795,6 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         return (r"\textcolor{red}{" + s + "}") if f > 1.0 else s
 
     def _lc_short(lc):
-        # Show the full combination expression as-is, e.g.
-        # "ACCIDENTAL 1: 1.0DL + 1.0DW + 0.75LL" (the per_lc key).
         return _tex(str(lc).strip())
 
     def _gov_lc_in_522(g, check_ids):
@@ -899,8 +811,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         return _lc_short(best[1]) if best else "---"
 
     def _dcr_row(check_ids, fallback_unit=""):
-        # Prefer per_girder["checks"] (carries units); worst girder by DCR.
-        best = None  # (dcr, demand, capacity, dunit, cunit, g)
+        best = None
         for g, gd in _pg_522.items():
             if str(g).startswith("EB"):
                 continue
@@ -914,8 +825,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
             d, dem, cap, du, cu, g = best
             return (_gov_lc_in_522(g, check_ids),
                     _vu_522(dem, du) or "---", _vu_522(cap, cu) or "---", _ur_522(d) or "---")
-        # Fallback: per_lc (no units) for SLS-conditional checks (e.g. deflection).
-        best = None  # (dcr, demand, capacity, lc)
+        best = None
         for g, gd in _pg_522.items():
             if str(g).startswith("EB"):
                 continue
@@ -934,11 +844,10 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
                 _vu_522(dem, fallback_unit) or "---", _vu_522(cap, fallback_unit) or "---",
                 _ur_522(d) or "---")
 
-    # (3) Cross bracing — worst pair/member by UR for the given force type.
     _cb_pairs_522 = bridge.get_cb_pairs()
 
     def _cb_row(force_type):
-        best = None  # (ur, pair, member, capacity_str)
+        best = None
         for pair in _cb_pairs_522:
             for member in ("diagonal", "chord"):
                 cap = bridge.get_cb_capacity(pair, member, force_type)
@@ -958,7 +867,7 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         return (gov, dem, cap_s, _ur_522(ur))
 
     def _cb_slender_row():
-        best = None  # (ratio, slend, limit)
+        best = None
         for pair in _cb_pairs_522:
             for member in ("diagonal", "chord"):
                 s = bridge.get_cb_slenderness(pair, member)
@@ -979,10 +888,6 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         c = [x if x else "---" for x in cells]
         return label + r" & " + r" & ".join(c) + r" \\[6pt]" + "\n\\hline"
 
-    # Deck rows: Demand/Capacity from deck_report_values (KEY_DD_*, the same dict
-    # the 5.17 tables use); UR = Demand/Capacity. The deck is designed for the
-    # IRC:6 Basic ULS combination — build that combo string from the stored
-    # partial factors (gamma_dl, gamma_ll).
     _deck_combo = (
         r"Basic ULS: " + _tex(f"{_dkv(KEY_DD_GAMMA_DL):g}DL + {_dkv(KEY_DD_GAMMA_LL):g}LL")
     ) if _dk_has else "---"
@@ -998,12 +903,8 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         return (_deck_combo, f"{dem:.2f} {unit}", f"{cap:.2f} {unit}", _ur_522(ur))
 
     def _row522_msg(label, msg):
-        # Single message spanning the 4 data columns.
         return label + r" & \multicolumn{4}{c|}{" + msg + r"} \\[6pt]" + "\n\\hline"
 
-    # End diaphragm: when configured as Cross Bracing it is designed as bracing
-    # members → mirror the cross-bracing axial rows. For Rolled / Welded beam end
-    # diaphragms the moment/shear design is not implemented yet → show a message.
     _ed_type = ""
     for _k, _v in bridge.input_dict.items():
         if str(_k).startswith(KEY_MP_ED_TYPE) and _v:
@@ -1018,12 +919,8 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         _ed_moment_row = _row522_msg(r"End Diaphragm --- Moment", _ed_msg)
         _ed_shear_row  = _row522_msg(r"End Diaphragm --- Shear",  _ed_msg)
 
-    # Crack width (slab): governing crack width vs limit from the deck designer
-    # (frequent SLS combination). _dk_gov_wk is the max of bottom/top/overhang wk.
-    # The governing load combo is the SLS-frequent combination with the highest
-    # DCR (its full expression comes straight from the per_lc keys).
     def _gov_sls_frequent():
-        best = None  # (dcr, lc)
+        best = None
         for _g, _gd in _pg_522.items():
             if str(_g).startswith("EB"):
                 continue
@@ -1064,6 +961,12 @@ Fatigue Shear Resistance, $Q_r$ & IRC 22 Table 8 ($\phi d$, $N_{sc}$) & """
         _ed_shear_row,
     ]
     t522_content = "\n".join(_t522)
+
+    ur_chart = _fig_embed(
+        fig_paths.get("chart_ur_summary"),
+        "Overall Utilization Ratio (Demand / Capacity) Summary for Primary Bridge Elements",
+        width=r"0.88\textwidth",
+    )
 
     return r"""
 \chapter{Design Checks}
@@ -1453,8 +1356,8 @@ End diaphragms at the supports transfer transverse loads to the bearings, restra
 \vspace{0.4em}
 \noindent
 \setlength{\tabcolsep}{4pt}
-\setlength{\LTleft}{0pt}
-\setlength{\LTright}{\fill}
+\setlength\LTleft{0pt}
+\setlength\LTright{\fill}
 
 \begin{longtable}{|C{2.0cm}|L{2.0cm}|L{2.2cm}|C{2.5cm}|C{2.0cm}|C{2.0cm}|}
 \caption{\textbf{End Diaphragm --- Connection and Section Properties}}
@@ -1501,5 +1404,6 @@ End diaphragms at the supports transfer transverse loads to the bearings, restra
 \end{longtable}
 \noindent\textit{Note: UR = Demand / Capacity. All values $\leq 1.0$ indicate passing checks. The governing check for each component is highlighted in the individual design check sections above.}
 
+\vspace{1em}
+""" + ur_chart + r"""
 """
-

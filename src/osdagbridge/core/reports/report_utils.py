@@ -1,3 +1,5 @@
+import re
+
 from osdagbridge.core.utils.common import (
     KEY_MP_GD_MEMBER_ID,
     KEY_MP_GD_SELECT_GIRDER,
@@ -17,8 +19,8 @@ def _tex(value):
         s = s.replace(uni, ascii_)
     s = s.replace('\\', r'\textbackslash{}')
     for ch, esc in [('&', r'\&'), ('%', r'\%'), ('$', r'\$'), ('#', r'\#'),
-                    ('{', r'\{'), ('}', r'\}'),          
-                    ('_', r'\_\allowbreak{}'),            
+                    ('{', r'\{'), ('}', r'\}'),
+                    ('_', r'\_\allowbreak{}'),
                     ('~', r'\textasciitilde{}'), ('^', r'\^{}')]:
         s = s.replace(ch, esc)
     s = s.replace(':', r':\allowbreak{}')
@@ -33,35 +35,10 @@ def _render_value(source_dict, key, unit=""):
 
 
 def get_girder_entries(input_dict):
-    """
-    Retrieve all girder labels and member IDs from backend keys.
-
-    Usage Example:
-    --------------------------
-    girder_entries = get_girder_entries(bridge.input_dict)
-    
-    # 1. Fallback handling (if backend hasn't populated keys yet)
-    if not girder_entries:
-        n = int(bridge.input_dict.get(KEY_TS_NO_OF_GIRDERS, 1))
-        girder_entries = [(f"Girder {i}", f"M1") for i in range(1, n + 1)]
-        
-    # 2. Get total number of girders safely
-    n_girders = len(girder_entries)
-    
-    # 3. Iterate over the girders to build table rows
-    for lbl, mid in girder_entries:
-        # lbl will be e.g., "G1", mid will be e.g., "G1M1"
-        # Access girder specific keys dynamically:
-        # val = input_dict.get(f"{KEY_MP_GIRDER_DEPTH}.{lbl}.{mid}")
-        pass
-
-    Returns:
-        List[Tuple[str, str]]
-    """
+    """Retrieve all girder labels and member IDs from backend keys."""
     n = int(input_dict.get(KEY_TS_NO_OF_GIRDERS, 0))
 
     entries = []
-
     for i in range(1, n + 1):
         entries.append(
             (
@@ -74,9 +51,7 @@ def get_girder_entries(input_dict):
 
 
 def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
-    """Embed figure if path is provided (file already copied to assets), else show placeholder box.
-    path is the relative path as pdflatex will see it (e.g. 'assets/plan.png').
-    """
+    """Embed figure if path is provided (file already copied to assets), else show placeholder box."""
     if path:
         p = path.replace('\\', '/')
         return (r'\begin{figure}[H]' + '\n'
@@ -92,8 +67,9 @@ def _fig_or_placeholder(path, caption, width=r'0.9\textwidth'):
             r'\caption*{' + caption + '}\n'
             r'\end{figure}')
 
+
 def _fig_embed(path, caption, width=r'\textwidth', height=None):
-    """Embed a real figure when path is provided (already copied); otherwise use an fbox placeholder."""
+    """Embed a real figure when path is provided; otherwise use an fbox placeholder."""
     if path:
         p = path.replace('\\', '/')
         opts = 'width=' + width
@@ -107,9 +83,71 @@ def _fig_embed(path, caption, width=r'\textwidth', height=None):
                 r'\caption*{\small ' + caption + '}\n'
                 r'\vspace{-0.5em}' + '\n'
                 r'\end{figure}')
-    # fbox placeholder — matches template exactly
     return (r'\noindent\fbox{\parbox{0.97\textwidth}{' + '\n'
             r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
             r'}}')
 
 
+def ensure_longtable_headers(tex_str):
+    """Add repeating headers (endfirsthead/endhead) to longtable blocks that lack them."""
+    pattern = re.compile(
+        r"(\\begin\{longtable\}\{[^\n]+\})(.*?)(\\end\{longtable\})",
+        re.DOTALL,
+    )
+
+    def _patch(match):
+        start_tag, body, end_tag = match.groups()
+        if r"\endhead" in body:
+            return match.group(0)
+
+        hdr_re = re.compile(
+            r"^(\s*(?:\\caption(?:\[[^\]]*\])?\{[^\n]*?\}(?:\s*\\\\)?\s*)?)"
+            r"(\\hline\s*\n)"
+            r"([^\n]+\\\\(?:\[[^\]]*\])?\s*\n)"
+            r"(\\hline\s*\n)",
+            re.DOTALL,
+        )
+        m = hdr_re.match(body)
+        if not m:
+            return match.group(0)
+
+        cap_part, hline1, header_row, hline2 = m.groups()
+        rest = body[m.end():]
+
+        if r"\multirow" in header_row or r"\textnormal" in header_row:
+            return match.group(0)
+
+        num_cols = header_row.count("&") + 1
+
+        cap_first = cap_part.strip()
+        cap_cont = ""
+        if cap_first:
+            if not cap_first.endswith(r"\\"):
+                cap_first = cap_first + r" \\"
+            cap_first = "\n" + cap_first + "\n"
+            cap_cont = re.sub(
+                r"\\caption\{(.*)\}\s*\\\\",
+                r"\\caption[]{\1 \\textit{(Continued)}} \\\\",
+                cap_first,
+            )
+
+        patched_head = (
+            f"{cap_first}"
+            f"{hline1}"
+            f"\\rowcolor{{tableHeaderBg}}\n"
+            f"{header_row}"
+            f"{hline2}"
+            f"\\endfirsthead\n"
+            f"{cap_cont}"
+            f"{hline1}"
+            f"\\rowcolor{{tableHeaderBg}}\n"
+            f"{header_row}"
+            f"{hline2}"
+            f"\\endhead\n"
+            f"\\multicolumn{{{num_cols}}}{{r}}{{\\footnotesize\\textit{{Continued on next page\\ldots}}}} \\\\\n"
+            f"\\endfoot\n"
+            f"\\endlastfoot\n"
+        )
+        return start_tag + patched_head + rest + end_tag
+
+    return pattern.sub(_patch, tex_str)
